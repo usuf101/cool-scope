@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 from dotenv import load_dotenv
@@ -158,7 +158,7 @@ def analyze_endpoint(req: LocationRequest):
         payload = {
             "sat": {"latitude": req.latitude, "longitude": req.longitude},
             "date_time": {
-                "start_date": datetime.now().strftime("%Y-%m-%d"),
+                "start_date": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
                 "start_time": "14:00",
                 "filter_type": 1,
             },
