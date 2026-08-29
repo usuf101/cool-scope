@@ -1,22 +1,17 @@
-"""Cool Scope — FortyGuard satellite fetch → DETR/ResNet-50 inference via FastAPI.
+"""Cool Scope — FortyGuard satellite fetch via FastAPI.
 
-This wraps the FortyGuard API polling and Hugging Face model inference into a
-web server endpoint (/api/analyze) so the React frontend can consume it.
+This wraps the FortyGuard API polling into a web server endpoint (/api/analyze)
+so the React frontend can consume it.
 """
 
 from __future__ import annotations
 
-import base64
-import io
 import os
 import time
 from datetime import datetime
-from typing import Any
 
 import requests
-import torch
 from dotenv import load_dotenv
-from PIL import Image
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -30,14 +25,12 @@ HEADERS = {"api-key": API_KEY, "Content-Type": "application/json"}
 _SUCCESS = {"succeeded", "completed"}
 _FAILURE = {"failed", "error"}
 
-HF_DETR_MODEL_ID = "facebook/detr-resnet-50"
-
 ROOF_CLASS_HINTS = ("building", "roof")
 CANOPY_CLASS_HINTS = ("tree", "canopy", "plant")
 ROAD_CLASS_HINTS = ("road", "route", "highway", "street", "pavement", "parking", "sidewalk")
 
 # ==========================================
-# 1. Initialize FastAPI and Load Models
+# 1. Initialize FastAPI
 # ==========================================
 app = FastAPI(title="Cool Scope API")
 
@@ -49,15 +42,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-print("Loading Hugging Face DETR model...")
-from transformers import DetrForObjectDetection, DetrImageProcessor
-processor = DetrImageProcessor.from_pretrained(HF_DETR_MODEL_ID)
-model = DetrForObjectDetection.from_pretrained(HF_DETR_MODEL_ID)
-model.eval()
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device)
-print(f"Model loaded successfully on {device}!")
-
 class LocationRequest(BaseModel):
     latitude: float
     longitude: float
@@ -66,7 +50,7 @@ class FortyGuardRequestError(RuntimeError):
     """Raised when submit or poll returns a non-recoverable API error."""
 
 # ==========================================
-# 2. Helper Functions (Unchanged)
+# 2. Helper Functions
 # ==========================================
 def _parse_json(resp: requests.Response) -> dict:
     try:
@@ -87,19 +71,6 @@ def unwrap_status_payload(body: dict) -> dict:
     if isinstance(body.get("data"), dict):
         return body["data"]
     return body
-
-def _first_b64(value: Any) -> str | None:
-    if not value: return None
-    if isinstance(value, list): return _first_b64(value[0] if value else None)
-    if not isinstance(value, str): return None
-    blob = value.strip()
-    if blob.startswith("data:"): blob = blob.split(",", 1)[1]
-    return blob or None
-
-def decode_base64_image(b64: str | None) -> Image.Image | None:
-    blob = _first_b64(b64)
-    if not blob: return None
-    return Image.open(io.BytesIO(base64.b64decode(blob))).convert("RGB")
 
 # ==========================================
 # 3. Core API Logic
@@ -166,17 +137,13 @@ def extract_segmentation(result: dict) -> dict:
     tree = _coverage(CANOPY_CLASS_HINTS)
     others = _coverage(("others",))
 
-    # If FortyGuard didn't classify any explicit building/road, fall back to
-    # treating unclassified "others" coverage as impervious surface, since in
-    # practice non-vegetation ground cover in urban tiles is overwhelmingly
-    # pavement/structures rather than truly ambiguous.
     if building_and_road == 0 and others > 0:
         building_and_road = others
 
     return {
         "roof_coverage_pct": building_and_road,
         "canopy_coverage_pct": tree,
-        "road_coverage_pct": 0.0,  # folded into roof_coverage_pct above when using the fallback
+        "road_coverage_pct": 0.0,
     }
 
 # ==========================================
@@ -206,14 +173,9 @@ def analyze_endpoint(req: LocationRequest):
         tree = parsed["canopy_coverage_pct"]
         road = parsed["road_coverage_pct"]
 
-        # Impervious surface (building + road) drives heat up; naturally bounded 0-100
-        # since it's a weighted average of two percentages.
         impervious_score = (building * 0.65) + (road * 0.35)
-        
-        # Tree canopy cools things down, but shouldn't be able to zero out a hot,
-        # heavily built location on its own — capped at half weight vs. before.
         cooling_offset = tree * 0.5
-        
+
         heat_score = impervious_score - cooling_offset
         heat_score = max(0, min(100, heat_score))
 
