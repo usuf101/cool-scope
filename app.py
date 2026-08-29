@@ -113,7 +113,7 @@ def poll_status(activity_id: str, poll_interval: float = 3.0, timeout: float = 2
             return result
 
         if status in _FAILURE:
-            raise FortyGuardRequestError(f"Activity failed: {data.get('message') or status}")
+            raise FortyGuardRequestError(f"Activity failed: {data}")
 
         print(f"[poll_status] {activity_id}: status={status!r}, waiting...")
         time.sleep(poll_interval)
